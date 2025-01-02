@@ -1,51 +1,18 @@
-#include <linux/init.h>
-#include <linux/kern_levels.h>
-#include <linux/kmod.h>
-#include <linux/printk.h>
+#include "linux/init.h"
+#include "linux/kern_levels.h"
+#include "linux/kmod.h"
+#include "linux/printk.h"
 #include <linux/module.h>
 
 #include <rdma/ib_verbs.h>
 
 #include "fake_driver.h"
 
-MODULE_LICENSE("GPL");
 MODULE_AUTHOR("zhangjiabao");
-MODULE_DESCRIPTION("A simple fake RDMA device");
 
 static inline struct frdma_dev *to_fdev(struct ib_device *ibdev)
 {
     return container_of(ibdev, struct frdma_dev, ibdev);
-}
-
-// some apis
-static struct ib_pd *frdma_alloc_pd(struct ib_device *ib_dev, struct ib_udata *udata)
-{
-    return ib_alloc_pd(ib_dev, 0, udata);
-}
-
-static int frdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
-{
-    ib_dealloc_pd(pd);
-    return 0;
-}
-
-static struct ib_qp *frdma_create_qp(struct ib_pd *pd, struct ib_qp_init_attr *attr,
-                                     struct ib_udata *udata)
-{
-    struct ib_qp *qp;
-    qp = ib_create_qp(pd, attr, udata);
-    return qp;
-}
-
-static int frdma_destroy_qp(struct ib_qp *qp, struct ib_udata *udata)
-{
-    return ib_destroy_qp(qp, udata);
-}
-
-static int frdma_modify_qp(struct ib_qp *qp, struct ib_qp_attr *attr,
-                           int attr_mask, struct ib_udata *udata)
-{
-    return ib_modify_qp(qp, attr, attr_mask, udata);
 }
 
 static int frdma_get_port_immutable(struct ib_device *ibdev,
@@ -119,7 +86,6 @@ static int frdma_query_port(struct ib_device *ibdev,
 
     attr->state = IB_PORT_ACTIVE;
     attr->phys_state = IB_PORT_PHYS_STATE_LINK_UP;
-
     return 0;
 
 err_out:
@@ -132,6 +98,7 @@ static int frdma_query_pkey(struct ib_device *ibdev,
                             u16 index,
                             u16 *pkey)
 {
+    // struct frdma_dev* dev = to_fdev( ibdev );
     int err;
 
     if (index != 0)
@@ -151,8 +118,10 @@ err_out:
 static int frdma_enable_driver(struct ib_device *ibdev)
 {
     dev_warn(&ibdev->dev, "entry enable_driver");
+    // dev->ibdev.kverbs_provider = true;
+    dev_info(&ibdev->dev, "Device node created: %s\n", ibdev->dev.kobj.name);
     dev_info(&ibdev->dev, "device->kverbs_provider is %s", ibdev->kverbs_provider ? "true" : "false");
-    dev_info(&ibdev->dev, "device->node_type: %d\n", ibdev->node_type); // ibdev->node_type
+    dev_info(&ibdev->dev, "device->node_type: %d\n", ibdev->node_type); // 修改此行
 
     struct frdma_dev *dev = to_fdev(ibdev);
     struct ib_event ev;
@@ -168,21 +137,45 @@ static int frdma_enable_driver(struct ib_device *ibdev)
 
 static int frdma_alloc_ucontext(struct ib_ucontext *ibuc, struct ib_udata *udata)
 {
-    pr_err("frdma_alloc_pd called in %s at %d lines\n", __FILE__, __LINE__);
+
     return 0;
 }
 
-const struct ib_device_ops frdma_device_ops = {
-    .owner = THIS_MODULE,
-    .driver_id = RDMA_DRIVER_RXE, // must be registered in kernel, or maybe in rdma-core provider?
-    .uverbs_abi_ver = 2,          // This depends on the abi of driver_id
+static void frdma_dealloc_ucontext(struct ib_ucontext *ibuc)
+{
+}
 
-    .query_device = frdma_query_device,
-    .query_port = frdma_query_port,
-    .query_pkey = frdma_query_pkey,
-    .get_port_immutable = frdma_get_port_immutable,
-    .alloc_ucontext = frdma_alloc_ucontext,
-    .enable_driver = frdma_enable_driver,
+static int frdma_mmap(struct ib_ucontext *ibuc, struct vm_area_struct *vma)
+{
+    return 0;
+}
+
+static int frdma_alloc_pd(struct ib_pd *pd, struct ib_udata *udata)
+{
+    return 0;
+}
+
+static void frdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
+{
+}
+
+const struct ib_device_ops frdma_device_ops =
+    {
+        .owner = THIS_MODULE,
+        .driver_id = RDMA_DRIVER_RXE, //! must be registered in kernel, or maybe in rdma-core provider?
+        .uverbs_abi_ver = 2,          //! This depends on the abi of driver_id
+
+        //.dealloc_ucontext   = frdma_dealloc_ucontext,
+        .mmap = frdma_mmap,
+        .alloc_pd = frdma_alloc_pd,
+        //.dealloc_pd         = frdma_dealloc_pd,
+        //----------------
+        .query_device = frdma_query_device,
+        .query_port = frdma_query_port,
+        .query_pkey = frdma_query_pkey,
+        .get_port_immutable = frdma_get_port_immutable,
+        .alloc_ucontext = frdma_alloc_ucontext,
+        .enable_driver = frdma_enable_driver,
 };
 
 static struct frdma_dev *dev;
@@ -255,24 +248,56 @@ static __init int frdma_init_module(void)
         return ret;
     }
 
-    dev = ib_alloc_device(frdma_device_ops, sizeof(struct frdma_dev));
-    if (IS_ERR(dev))
+    dev = ib_alloc_device(frdma_dev, ibdev);
+    if (!dev)
     {
-        ret = PTR_ERR(dev);
-        pr_err("ib_alloc_device failed\n");
-        return ret;
+        dev_err(&dev->ibdev.dev, "ib_alloc_device failed\n");
+        return -ENOMEM;
     }
+
+    // dev->ibdev.node_type = RDMA_NODE_RNIC;
+    dev->ibdev.node_type = RDMA_NODE_IB_CA;
+    dev->ibdev.kverbs_provider = true;
+
+    memcpy(&dev->ibdev.node_desc, FRDMA_NODE_DESC, sizeof(FRDMA_NODE_DESC));
+
+    dev->ibdev.phys_port_cnt = 1;
+    dev->ibdev.num_comp_vectors = num_possible_cpus();
+    dev->ibdev.local_dma_lkey = 0;
+    dev->ibdev.node_guid = 0x66616b6572646d61;
+
+    dev->ibdev.uverbs_cmd_mask =
+        (1ull << IB_USER_VERBS_CMD_GET_CONTEXT) |
+        (1ull << IB_USER_VERBS_CMD_QUERY_DEVICE) |
+        (1ull << IB_USER_VERBS_CMD_QUERY_PORT) |
+        (1ull << IB_USER_VERBS_CMD_ALLOC_PD) |
+        (1ull << IB_USER_VERBS_CMD_DEALLOC_PD) |
+        (1ull << IB_USER_VERBS_CMD_POST_SEND) |
+        (1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ);
+
+    dev->ibdev.kverbs_provider = true; // test
 
     frdma_attr_init(dev);
     frdma_port_init(dev);
+    ib_set_device_ops(&dev->ibdev, &frdma_device_ops);
+
+    ret = ib_register_device(&dev->ibdev, "frdma_%d", NULL);
+    if (ret)
+    {
+        dev_err(&dev->ibdev.dev, "ib_register_device: ret = %d\n", ret);
+        ib_dealloc_device(&dev->ibdev);
+        return ret;
+    }
+
     return ret;
 }
 
-static __exit void frdma_cleanup_module(void)
+static void __exit frdma_exit_module(void)
 {
-    ib_free_device(&dev->ibdev);
-    pr_warning("frdma cleanup module\n");
+    printk(KERN_WARNING "frdma exit module\n");
+    ib_unregister_device(&dev->ibdev);
+    ib_dealloc_device(&dev->ibdev);
 }
 
 module_init(frdma_init_module);
-module_exit(frdma_cleanup_module);
+module_exit(frdma_exit_module);
