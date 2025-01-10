@@ -26,12 +26,7 @@ struct frdma_cq
     struct ib_cq *cq;
 };
 
-struct frdma_device
-{
-    struct ib_device ib_dev;
-};
-
-static struct ib_device *frdma_device;
+// static struct ib_device *frdma_device;
 
 static int frdma_get_port_immutable(struct ib_device *ibdev,
                                     u32 port,
@@ -136,10 +131,10 @@ err_out:
 static int frdma_enable_driver(struct ib_device *ibdev)
 {
     dev_warn(&ibdev->dev, "entry enable_driver");
-    // dev->ibdev.kverbs_provider = true;
+    // ibdev->kverbs_provider = true;
     dev_info(&ibdev->dev, "Device node created: %s\n", ibdev->dev.kobj.name);
     dev_info(&ibdev->dev, "device->kverbs_provider is %s", ibdev->kverbs_provider ? "true" : "false");
-    dev_info(&ibdev->dev, "device->node_type: %d\n", ibdev->node_type); // 修改此行
+    dev_info(&ibdev->dev, "device->node_type: %d\n", ibdev->node_type);
 
     struct frdma_dev *dev = to_fdev(ibdev);
     struct ib_event ev;
@@ -147,20 +142,195 @@ static int frdma_enable_driver(struct ib_device *ibdev)
 
     ev.device = &dev->ibdev;
     ev.element.port_num = 1;
-    ev.event = IB_EVENT_PORT_ACTIVE;
+    // ev.event = IB_EVENT_PORT_ACTIVE;
     ib_dispatch_event(&ev);
 
     return 0;
 }
 
-static int frdma_alloc_ucontext(struct ib_ucontext *ibuc, struct ib_udata *udata)
-{
+#define FRDMA_MAX_CONTEXT 1024
+#define FRDMA_MMAP_IO_NC 0
 
-    return 0;
+struct frdma_ext_db_info
+{
+    bool enable;
+    u16 sdb_off;
+    u16 rdb_off;
+    u16 cdb_off;
+};
+
+struct frdma_ucontext
+{
+    struct frdma_dev *dev;
+    struct ib_ucontext ibucontext;
+
+    struct frdma_ext_db_info ext_db;
+
+    struct list_head dbrecords_page_list;
+    struct mutex dbrecords_page_mutex;
+
+    u64 *sdb;
+    u64 *rdb;
+    u64 *cdb;
+
+    struct rdma_user_mmap_entry *sq_db_mmap_entry;
+    struct rdma_user_mmap_entry *rq_db_mmap_entry;
+    struct rdma_user_mmap_entry *cq_db_mmap_entry;
+};
+
+static inline struct frdma_ucontext *to_fctx(struct ib_ucontext *ibuc)
+{
+    return container_of(ibuc, struct frdma_ucontext, ibucontext);
 }
 
-static void frdma_dealloc_ucontext(struct ib_ucontext *ibuc)
+int alloc_db_resources(struct frdma_dev *dev, struct frdma_ucontext *ctx, bool extend_db)
 {
+    ctx->sdb = kzalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!ctx->sdb)
+        return -ENOMEM;
+
+    ctx->rdb = kzalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!ctx->rdb)
+        goto err_free_sdb;
+
+    ctx->cdb = kzalloc(PAGE_SIZE, GFP_KERNEL);
+    if (!ctx->cdb)
+        goto err_free_rdb;
+
+    if (extend_db)
+    {
+    }
+
+    return 0;
+
+err_free_rdb:
+    kfree(ctx->rdb);
+err_free_sdb:
+    kfree(ctx->sdb);
+    return -ENOMEM;
+}
+
+void free_db_resources(struct frdma_dev *dev, struct frdma_ucontext *ctx)
+{
+    kfree(ctx->sdb);
+    kfree(ctx->rdb);
+    kfree(ctx->cdb);
+}
+
+void *frdma_user_mmap_entry_insert(struct frdma_ucontext *ctx, void *addr, size_t size, int flags, void *uresp_field)
+{
+    return addr;
+}
+
+void frdma_uctx_user_mmap_entries_remove(struct frdma_ucontext *ctx)
+{
+}
+
+#define FRDMA_DEV_CAP_FLAGS_EXTEND_DB 0x01
+
+int frdma_alloc_ucontext(struct ib_ucontext *ibuc, struct ib_udata *udata)
+{
+    printk(KERN_WARNING "test01--------\n");
+    struct frdma_ucontext *ctx;
+    struct frdma_dev *dev = to_fdev(ibuc->device);
+    int ret;
+    struct
+    {
+        u32 dev_id;
+
+    } uresp = {};
+
+    printk(KERN_WARNING "test02--------\n");
+
+    if (atomic_inc_return(&dev->num_ctx) > FRDMA_MAX_CONTEXT)
+    {
+        ret = -ENOMEM;
+        goto err_out;
+    }
+
+    printk(KERN_WARNING "test03--------\n");
+
+    if (udata->outlen < sizeof(uresp))
+    {
+        ret = -EINVAL;
+        goto err_out;
+    }
+
+    printk(KERN_WARNING "test04--------\n");
+
+    ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
+    if (!ctx)
+    {
+        ret = -ENOMEM;
+        goto err_out;
+    }
+
+    printk(KERN_WARNING "test05--------\n");
+    ctx->dev = dev;
+    INIT_LIST_HEAD(&ctx->dbrecords_page_list);
+    mutex_init(&ctx->dbrecords_page_mutex);
+
+    printk(KERN_WARNING "test06--------\n");
+
+    ret = alloc_db_resources(dev, ctx, !!(dev->attrs.device_cap_flags & FRDMA_DEV_CAP_FLAGS_EXTEND_DB));
+    if (ret)
+        goto err_free_ctx;
+
+    printk(KERN_WARNING "test07--------\n");
+
+    ctx->sq_db_mmap_entry = frdma_user_mmap_entry_insert(ctx, ctx->sdb, PAGE_SIZE, FRDMA_MMAP_IO_NC, &uresp.dev_id);
+    if (!ctx->sq_db_mmap_entry)
+    {
+        ret = -ENOMEM;
+        goto err_free_resources;
+    }
+
+    printk(KERN_WARNING "test08--------\n");
+    ctx->rq_db_mmap_entry = frdma_user_mmap_entry_insert(ctx, ctx->rdb, PAGE_SIZE, FRDMA_MMAP_IO_NC, &uresp.dev_id);
+    if (!ctx->rq_db_mmap_entry)
+    {
+        ret = -EINVAL;
+        goto err_remove_mmap_entries;
+    }
+
+    printk(KERN_WARNING "test09--------\n");
+    ctx->cq_db_mmap_entry = frdma_user_mmap_entry_insert(ctx, ctx->cdb, PAGE_SIZE, FRDMA_MMAP_IO_NC, &uresp.dev_id);
+    if (!ctx->cq_db_mmap_entry)
+    {
+        ret = -EINVAL;
+        goto err_remove_mmap_entries;
+    }
+
+    // ibuc->driver_ctx = ctx;
+
+    uresp.dev_id = dev->pdev->device;
+
+    printk(KERN_WARNING "test10--------\n");
+
+    ret = ib_copy_to_udata(udata, &uresp, sizeof(uresp));
+    if (ret)
+        goto err_remove_mmap_entries;
+
+err_remove_mmap_entries:
+    frdma_uctx_user_mmap_entries_remove(ctx);
+err_free_resources:
+    free_db_resources(dev, ctx);
+err_free_ctx:
+    kfree(ctx);
+err_out:
+    atomic_dec(&dev->num_ctx);
+    return ret;
+}
+
+void frdma_dealloc_ucontext(struct ib_ucontext *ibctx)
+{
+    struct frdma_dev *dev = to_fdev(ibctx->device);
+    struct frdma_ucontext *ctx = to_fctx(ibctx);
+
+    frdma_uctx_user_mmap_entries_remove(ctx);
+    free_db_resources(dev, ctx);
+    atomic_dec(&dev->num_ctx);
+    return;
 }
 
 static int frdma_mmap(struct ib_ucontext *ibuc, struct vm_area_struct *vma)
@@ -173,8 +343,19 @@ static int frdma_alloc_pd(struct ib_pd *pd, struct ib_udata *udata)
     return 0;
 }
 
-static void frdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
+static int frdma_dealloc_pd(struct ib_pd *pd, struct ib_udata *udata)
 {
+    return 0;
+}
+
+static int frdma_alloc_mr(struct ib_pd *pd, struct ib_udata *udata)
+{
+    return 0;
+}
+
+static int frdma_alloc_mw(struct ib_pd *pd, struct ib_udata *udata)
+{
+    return 0;
 }
 
 static int frdma_post_send(struct ib_qp *qp, const struct ib_send_wr *wr,
@@ -182,7 +363,7 @@ static int frdma_post_send(struct ib_qp *qp, const struct ib_send_wr *wr,
 {
     // pr_info("%s: Post send\n", DRIVER_NAME);
     // return ib_post_send(qp, wr, bad_wr);
-    return 0;
+    return -EOPNOTSUPP;
 }
 
 static int frdma_post_recv(struct ib_qp *qp, const struct ib_recv_wr *wr,
@@ -190,7 +371,7 @@ static int frdma_post_recv(struct ib_qp *qp, const struct ib_recv_wr *wr,
 {
     // pr_info("%s: Post recv\n", DRIVER_NAME);
     // return ib_post_recv(qp, wr, bad_wr);
-    return 0;
+    return -EOPNOTSUPP;
 }
 
 static int frdma_create_qp(struct ib_qp *qp, struct ib_qp_init_attr *qp_init_attr,
@@ -244,48 +425,34 @@ static int frdma_poll_cq(struct ib_cq *cq, int num_entries, struct ib_wc *wc)
     return 0;
 }
 
-// const struct ib_device_ops frdma_device_ops =
-//     {
-//         .owner = THIS_MODULE,
-//         .driver_id = RDMA_DRIVER_RXE, //! must be registered in kernel, or maybe in rdma-core provider?
-//         .uverbs_abi_ver = 2,          //! This depends on the abi of driver_id
-
-//         //.dealloc_ucontext   = frdma_dealloc_ucontext,
-//         .mmap = frdma_mmap,
-//         .alloc_pd = frdma_alloc_pd,
-//         //.dealloc_pd         = frdma_dealloc_pd,
-//         //----------------
-//         .query_device = frdma_query_device,
-//         .query_port = frdma_query_port,
-//         .query_pkey = frdma_query_pkey,
-//         .get_port_immutable = frdma_get_port_immutable,
-//         .alloc_ucontext = frdma_alloc_ucontext,
-//         .enable_driver = frdma_enable_driver,
-// };
+struct rdma_hw_stats *frdma_ib_alloc_hw_port_stats(struct ib_device *ibdev, u32 port_num)
+{
+    return 0;
+}
 
 const struct ib_device_ops frdma_device_ops = {
     .owner = THIS_MODULE,
     .driver_id = RDMA_DRIVER_RXE,
     .uverbs_abi_ver = 2,
 
-    .post_send = frdma_post_send,
-    .post_recv = frdma_post_recv,
-
-    .mmap = frdma_mmap,
+    .alloc_hw_port_stats = frdma_ib_alloc_hw_port_stats,
+    //.alloc_mr = frdma_alloc_mr,
+    //.alloc_mw = frdma_alloc_mw,
+    .alloc_ucontext = frdma_alloc_ucontext,
     .alloc_pd = frdma_alloc_pd,
+    .create_qp = frdma_create_qp,
+    .modify_qp = frdma_modify_qp,
+    .destroy_qp = frdma_destroy_qp,
+    .poll_cq = frdma_poll_cq,
+    .dealloc_pd = frdma_dealloc_pd,
     .query_device = frdma_query_device,
     .query_port = frdma_query_port,
     .query_pkey = frdma_query_pkey,
     .get_port_immutable = frdma_get_port_immutable,
-    .alloc_ucontext = frdma_alloc_ucontext,
+    .dealloc_ucontext = frdma_dealloc_ucontext,
     .enable_driver = frdma_enable_driver,
-    // .post_send       = frdma_post_send,
-    // .post_recv       = frdma_post_recv,
-    .create_qp = frdma_create_qp,
-    .modify_qp = frdma_modify_qp,
-    .destroy_qp = frdma_destroy_qp,
-    .destroy_cq = frdma_destroy_cq,
-    .poll_cq = frdma_poll_cq,
+    .post_send = frdma_post_send,
+    .post_recv = frdma_post_recv,
 };
 
 static struct frdma_dev *dev;
@@ -361,13 +528,28 @@ static __init int frdma_init_module(void)
         return ret;
     }
 
+    struct frdma_dev *frdma_dev;
+
+    frdma_dev = kzalloc(sizeof(*frdma_dev), GFP_KERNEL);
+    if (!frdma_dev)
+        return -ENOMEM;
+
     // Allocate the device
     dev = ib_alloc_device(frdma_dev, ibdev);
+    // dev = _ib_alloc_device(sizeof(struct frdma_dev));  //test
+    // dev = _ib_alloc_device(sizeof(*dev));  //test
     if (!dev)
     {
         dev_err(&dev->ibdev.dev, "ib_alloc_device failed\n");
         return -ENOMEM;
     }
+
+    idr_init(&dev->cq_idr);
+    idr_init(&dev->qp_idr);
+    spin_lock_init(&dev->cq_lock);
+    spin_lock_init(&dev->qp_lock);
+
+    atomic_set(&dev->num_ctx, 0);
 
     // Set the node type and kverbs_provider flag
     dev->ibdev.node_type = RDMA_NODE_IB_CA;
@@ -387,13 +569,22 @@ static __init int frdma_init_module(void)
 
     // Set uverbs cmd mask
     dev->ibdev.uverbs_cmd_mask =
-        (1ull << IB_USER_VERBS_CMD_GET_CONTEXT) |
-        (1ull << IB_USER_VERBS_CMD_QUERY_DEVICE) |
-        (1ull << IB_USER_VERBS_CMD_QUERY_PORT) |
-        (1ull << IB_USER_VERBS_CMD_ALLOC_PD) |
-        (1ull << IB_USER_VERBS_CMD_DEALLOC_PD) |
-        (1ull << IB_USER_VERBS_CMD_POST_SEND) |
-        (1ull << IB_USER_VERBS_CMD_REQ_NOTIFY_CQ);
+        (1ULL << IB_USER_VERBS_CMD_GET_CONTEXT) |
+        (1ULL << IB_USER_VERBS_CMD_QUERY_DEVICE) |
+        (1ULL << IB_USER_VERBS_CMD_QUERY_PORT) |
+        (1ULL << IB_USER_VERBS_CMD_ALLOC_PD) |
+        (1ULL << IB_USER_VERBS_CMD_DEALLOC_PD) |
+        (1ULL << IB_USER_VERBS_CMD_POST_SEND) |
+        (1ULL << IB_USER_VERBS_CMD_POST_RECV) |
+        (1ULL << IB_USER_VERBS_CMD_CREATE_CQ) |
+        (1ULL << IB_USER_VERBS_CMD_DESTROY_CQ) |
+        (1ULL << IB_USER_VERBS_CMD_POLL_CQ) |
+        (1ULL << IB_USER_VERBS_CMD_CREATE_QP) |
+        (1ULL << IB_USER_VERBS_CMD_MODIFY_QP) |
+        (1ULL << IB_USER_VERBS_CMD_DESTROY_QP);
+
+    // dev->ibdev.uverbs_cmd_mask = BIT_ULL(IB_USER_VERBS_CMD_POST_SEND) |
+    // 			BIT_ULL(IB_USER_VERBS_CMD_REQ_NOTIFY_CQ);
 
     // Initialize device attributes and port attributes
     frdma_attr_init(dev);
@@ -401,15 +592,21 @@ static __init int frdma_init_module(void)
 
     // Set the device operations
     ib_set_device_ops(&dev->ibdev, &frdma_device_ops);
+    // ret = ib_device_set_netdev(&dev->ibdev, dev->netdev, 1);  //test
+    // if (ret)  return ret;
 
     // Register the device
     ret = ib_register_device(&dev->ibdev, "frdma_%d", NULL);
+    // printk(KERN_WARNING "register_device_test_success\n");
+    dev_info(&dev->ibdev.dev, "test01_device->node_type: %d\n", dev->ibdev.node_type);
     if (ret)
     {
         dev_err(&dev->ibdev.dev, "ib_register_device: ret = %d\n", ret);
         ib_dealloc_device(&dev->ibdev);
         return ret;
     }
+    // printk(KERN_WARNING "register_device_test_success_02\n");
+    dev_info(&dev->ibdev.dev, "test02_device->node_type: %d\n", dev->ibdev.node_type);
 
     return ret;
 }
