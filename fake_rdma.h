@@ -12,6 +12,62 @@
 
 #define DEFAULT_MAX_VALUE (1 << 20)
 
+
+#define FRDMA_VENDOR_ID 0x1022  // 示例值
+#define FRDMA_MAX_QP 1024
+#define FRDMA_MAX_CQ 1024
+#define FRDMA_MAX_MR 1024
+#define FRDMA_MAX_PD 1024
+#define FRDMA_MAX_AH 1024
+#define FRDMA_MAX_SRQ 1024
+#define FRDMA_MAX_SRQ_WR 1024
+#define FRDMA_MAX_SRQ_SGE 16
+#define FRDMA_MAX_SGE 16
+#define FRDMA_MAX_SGE_RD 16
+#define FRDMA_MAX_FMR_PAGE_LIST_LEN 512
+#define FRDMA_MAX_PKEYS 1
+#define FRDMA_LOCAL_CA_ACK_DELAY 15
+#define FRDMA_MAX_QP_RD_ATOM 16
+#define FRDMA_MAX_RES_RD_ATOM 16
+#define FRDMA_MAX_QP_INIT_RD_ATOM 16
+#define FRDMA_MAX_MCAST_GRP 1024
+#define FRDMA_MAX_MCAST_QP_ATTACH 16
+#define FRDMA_MAX_TOT_MCAST_QP_ATTACH 16
+#define FRDMA_MAX_MW 1024
+#define FRDMA_MAX_LOG_CQE 15
+
+// 设备能力标志
+#define FRDMA_DEVICE_CAP_FLAGS (IB_DEVICE_BAD_PKEY_CNTR | \
+                               IB_DEVICE_BAD_QKEY_CNTR | \
+                               IB_DEVICE_CHANGE_PHY_PORT | \
+                               IB_DEVICE_PORT_ACTIVE_EVENT | \
+                               IB_DEVICE_SYS_IMAGE_GUID | \
+                               IB_DEVICE_RC_RNR_NAK_GEN | \
+                               IB_DEVICE_MEM_WINDOW)
+
+struct frdma_dev
+{
+    struct ib_device ibdev;
+    struct net_device *netdev;
+    struct pci_dev *pdev;  // 添加PCI设备
+
+    struct ib_device_attr attrs;
+    struct frdma_port port;
+
+    struct ida pd_ida;
+    struct ida mr_ida;
+    struct ida cq_ida;
+    struct ida qp_ida;
+    
+    spinlock_t pd_lock;
+    spinlock_t mr_lock;
+    spinlock_t cq_lock;
+    spinlock_t qp_lock;
+    
+    struct list_head cep_list;
+    
+    atomic_t num_ctx;
+};
 enum rxe_device_param
 {
     FRDMA_MAX_MR_SIZE = -1ull,
@@ -106,16 +162,12 @@ struct frdma_devattr
     u32 max_sgl_rd;
 };
 
-struct frdma_dev
-{
-    struct ib_device ibdev;
-    struct net_device *netdev;
 
-    // struct frdma_devattr attrs;
-    struct ib_device_attr attrs;
-    struct frdma_port port;
+int frdma_post_send_process(struct frdma_qp *qp, const struct ib_send_wr *wr,
+    const struct ib_send_wr **bad_wr);
+int frdma_post_recv_process(struct frdma_qp *qp, const struct ib_recv_wr *wr,
+    const struct ib_recv_wr **bad_wr);
+int frdma_poll_cq_process(struct frdma_cq *cq, int num_entries, struct ib_wc *wc);
 
-    struct list_head cep_list;
-};
 
 #endif //! __FAKE_DRIVER_H__

@@ -5,6 +5,7 @@ MODULE_TARGET := /lib/modules/$(KERNEL_VERSION)/kernel/drivers/infiniband/hw/frd
 DEPS_LINUX := /usr/src/linux-headers-6.5.0-28-generic
 
 obj-m := fake_rdma.o
+fake_rdma-objs := fake_rdma.o fake_rdma_ops.o
 
 all:
 	$(MAKE) -C $(DEPS_LINUX) M=$(PWD) modules
